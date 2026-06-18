@@ -14,10 +14,18 @@ _G.RewardTrackerUI = {
 	Connections = {},
 	Gui = nil,
 	Main = nil,
+	Header = nil,
+	HeaderTitle = nil,
 	MinimizeButton = nil,
+	CloseButton = nil,
 	ToggleIcon = nil,
+	ToggleCount = nil,
+	ResizeHandle = nil,
 
+	StatsTitle = nil,
+	RewardsTitle = nil,
 	StatsContainer = nil,
+	StatLayout = nil,
 	RewardGrid = nil,
 	RewardLayout = nil,
 
@@ -41,16 +49,30 @@ _G.RewardTrackerUI = {
 
 	WasRewardVisible = false,
 	ProcessedVisibleContainers = {},
-	CellSizeSet = false,
-	ResultHandled = false
+	ResultHandled = false,
+
+	ContentScale = 0.5,
+	CurrentRewardCellSize = 40
 }
 
 local Hub = _G.RewardTrackerUI
 
-local MAIN_WIDTH = 470
-local MAIN_HEIGHT = 370
+local DESIGN_WIDTH = 470
+local DESIGN_HEIGHT = 370
 
-local REWARD_SCROLL_HEIGHT = 105
+local MAIN_WIDTH = 235
+local MAIN_HEIGHT = 185
+
+local MIN_WIDTH = 150
+local MIN_HEIGHT = 150
+local MAX_WIDTH = 360
+local MAX_HEIGHT = 290
+
+local HEADER_HEIGHT = 58
+local SCREEN_PADDING = 5
+local RESIZE_HANDLE_SIZE = 28
+
+local updateResponsiveLayout
 
 local function addConnection(c)
 	table.insert(Hub.Connections, c)
@@ -73,6 +95,127 @@ function Hub:Destroy()
 	end
 
 	_G.RewardTrackerUI = nil
+end
+
+local function isDragStartInput(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function isDragMoveInput(input)
+	return input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function getViewportSize()
+	local cam = workspace.CurrentCamera
+
+	if cam then
+		return cam.ViewportSize
+	end
+
+	return Vector2.new(1366, 768)
+end
+
+local function clampNumber(value, minValue, maxValue)
+	if maxValue < minValue then
+		return minValue
+	end
+
+	return math.clamp(value, minValue, maxValue)
+end
+
+local function getContentScale(size)
+	local scaleX = size.X / DESIGN_WIDTH
+	local scaleY = size.Y / DESIGN_HEIGHT
+
+	return math.clamp(math.min(scaleX, scaleY), 0.32, 0.9)
+end
+
+local function scaleValue(value, minValue)
+	local scaled = math.floor((value * Hub.ContentScale) + 0.5)
+
+	if minValue then
+		return math.max(minValue, scaled)
+	end
+
+	return math.max(1, scaled)
+end
+
+local function getSizeBounds()
+	local viewport = getViewportSize()
+
+	local maxW = math.max(220, math.min(MAX_WIDTH, viewport.X - (SCREEN_PADDING * 2)))
+	local maxH = math.max(185, math.min(MAX_HEIGHT, viewport.Y - (SCREEN_PADDING * 2)))
+
+	local minW = math.min(MIN_WIDTH, maxW)
+	local minH = math.min(MIN_HEIGHT, maxH)
+
+	return minW, minH, maxW, maxH
+end
+
+local function getInitialSize()
+	local minW, minH, maxW, maxH = getSizeBounds()
+
+	local w = clampNumber(MAIN_WIDTH, minW, maxW)
+	local h = clampNumber(MAIN_HEIGHT, minH, maxH)
+
+	return Vector2.new(w, h)
+end
+
+local function centerPositionForSize(size)
+	local viewport = getViewportSize()
+
+	return UDim2.fromOffset(
+		math.floor((viewport.X - size.X) / 2),
+		math.floor((viewport.Y - size.Y) / 2)
+	)
+end
+
+local function clampGuiToScreen(guiObject)
+	if not guiObject then
+		return
+	end
+
+	local viewport = getViewportSize()
+	local size = guiObject.AbsoluteSize
+
+	if size.X <= 0 or size.Y <= 0 then
+		size = Vector2.new(
+			guiObject.Size.X.Offset,
+			guiObject.Size.Y.Offset
+		)
+	end
+
+	local pos = guiObject.AbsolutePosition
+	local minX = SCREEN_PADDING
+	local minY = SCREEN_PADDING
+	local maxX = math.max(SCREEN_PADDING, viewport.X - size.X - SCREEN_PADDING)
+	local maxY = math.max(SCREEN_PADDING, viewport.Y - size.Y - SCREEN_PADDING)
+
+	guiObject.Position = UDim2.fromOffset(
+		clampNumber(pos.X, minX, maxX),
+		clampNumber(pos.Y, minY, maxY)
+	)
+end
+
+local function fitMainToViewport()
+	if not Hub.Main then
+		return
+	end
+
+	local minW, minH, maxW, maxH = getSizeBounds()
+	local currentSize = Hub.Main.AbsoluteSize
+
+	if currentSize.X <= 0 or currentSize.Y <= 0 then
+		currentSize = getInitialSize()
+	end
+
+	local newW = clampNumber(currentSize.X, minW, maxW)
+	local newH = clampNumber(currentSize.Y, minH, maxH)
+
+	Hub.Main.Size = UDim2.fromOffset(newW, newH)
+	clampGuiToScreen(Hub.Main)
 end
 
 local function waitForMissionResult()
@@ -348,8 +491,8 @@ end
 
 local function setupCloneCard(clone)
 	clone.Visible = true
-	clone.AnchorPoint = Vector2.new(0, 0)
-	clone.Position = UDim2.fromOffset(0, 0)
+	clone.AnchorPoint = Vector2.new(0.5, 0.5)
+	clone.Position = UDim2.fromScale(0.5, 0.5)
 	clone.LayoutOrder = 0
 
 	if clone:IsA("GuiObject") then
@@ -373,27 +516,31 @@ local function setupCloneCard(clone)
 	end
 end
 
-local function updateGridCellSize(container)
-	if Hub.CellSizeSet then
-		return
+local function updateRewardCellsScale()
+	local cellSize = Hub.CurrentRewardCellSize or 40
+
+	for _, data in pairs(Hub.Rewards) do
+		if data.Cell and data.Clone and data.Scale and data.BaseSize then
+			local baseW = math.max(1, data.BaseSize.X)
+			local baseH = math.max(1, data.BaseSize.Y)
+
+			data.Clone.Size = UDim2.fromOffset(baseW, baseH)
+			data.Clone.AnchorPoint = Vector2.new(0.5, 0.5)
+			data.Clone.Position = UDim2.fromScale(0.5, 0.5)
+
+			local margin = scaleValue(4, 2)
+			local available = math.max(10, cellSize - margin)
+
+			local scale = math.min(available / baseW, available / baseH)
+			data.Scale.Scale = math.clamp(scale, 0.25, 1.15)
+		end
 	end
+end
 
-	task.wait()
-
-	local size = container.AbsoluteSize
-
-	if size.X <= 0 or size.Y <= 0 then
-		size = Vector2.new(72, 72)
+local function updateGridCellSize()
+	if updateResponsiveLayout then
+		updateResponsiveLayout()
 	end
-
-	if Hub.RewardLayout then
-		Hub.RewardLayout.CellSize = UDim2.fromOffset(
-			math.clamp(size.X, 58, 95),
-			math.clamp(size.Y, 58, 95)
-		)
-	end
-
-	Hub.CellSizeSet = true
 end
 
 local function createSectionTitle(parent, text, posY)
@@ -406,6 +553,7 @@ local function createSectionTitle(parent, text, posY)
 	label.Font = Enum.Font.GothamBlack
 	label.TextSize = 14
 	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextTruncate = Enum.TextTruncate.AtEnd
 	label.Parent = parent
 
 	return label
@@ -437,26 +585,34 @@ local function createScrollFrame(parent, name, posY, height)
 	return scroll
 end
 
-local function createStatCard(parent, name, text, size, pos)
+local function createStatCard(parent, name, text, order)
 	local card = Instance.new("TextLabel")
 	card.Name = name
-	card.Size = size
-	card.Position = pos
+	card.Size = UDim2.fromOffset(198, 24)
 	card.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
 	card.BorderSizePixel = 0
 	card.Text = text
 	card.TextColor3 = Color3.fromRGB(235, 235, 245)
 	card.Font = Enum.Font.GothamBold
 	card.TextSize = 14
+	card.TextScaled = true
 	card.TextXAlignment = Enum.TextXAlignment.Left
+	card.TextTruncate = Enum.TextTruncate.AtEnd
+	card.LayoutOrder = order or 0
 	card.Parent = parent
+
+	local textLimit = Instance.new("UITextSizeConstraint")
+	textLimit.MinTextSize = 7
+	textLimit.MaxTextSize = 14
+	textLimit.Parent = card
 
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 10)
 	corner.Parent = card
 
 	local padding = Instance.new("UIPadding")
-	padding.PaddingLeft = UDim.new(0, 14)
+	padding.PaddingLeft = UDim.new(0, 12)
+	padding.PaddingRight = UDim.new(0, 8)
 	padding.Parent = card
 
 	return card
@@ -469,13 +625,95 @@ local function setMinimized(state)
 
 	Hub.Main.Visible = not state
 	Hub.ToggleIcon.Visible = state
+
+	if state then
+		clampGuiToScreen(Hub.ToggleIcon)
+	else
+		clampGuiToScreen(Hub.Main)
+
+		if updateResponsiveLayout then
+			updateResponsiveLayout()
+		end
+	end
+end
+
+local function makeDraggable(guiObject, dragArea)
+	local dragging = false
+	local dragStart
+	local startPosition
+
+	addConnection(dragArea.InputBegan:Connect(function(input)
+		if isDragStartInput(input) then
+			dragging = true
+			dragStart = input.Position
+			startPosition = guiObject.AbsolutePosition
+
+			addConnection(input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end))
+		end
+	end))
+
+	addConnection(UserInputService.InputChanged:Connect(function(input)
+		if dragging and isDragMoveInput(input) then
+			local delta = input.Position - dragStart
+
+			guiObject.Position = UDim2.fromOffset(
+				startPosition.X + delta.X,
+				startPosition.Y + delta.Y
+			)
+
+			clampGuiToScreen(guiObject)
+		end
+	end))
+end
+
+local function makeResizable(main, handle)
+	local resizing = false
+	local resizeStart
+	local startSize
+
+	addConnection(handle.InputBegan:Connect(function(input)
+		if isDragStartInput(input) then
+			resizing = true
+			resizeStart = input.Position
+			startSize = main.AbsoluteSize
+
+			addConnection(input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					resizing = false
+				end
+			end))
+		end
+	end))
+
+	addConnection(UserInputService.InputChanged:Connect(function(input)
+		if resizing and isDragMoveInput(input) then
+			local delta = input.Position - resizeStart
+			local minW, minH, maxW, maxH = getSizeBounds()
+
+			local newW = clampNumber(startSize.X + delta.X, minW, maxW)
+			local newH = clampNumber(startSize.Y + delta.Y, minH, maxH)
+
+			main.Size = UDim2.fromOffset(newW, newH)
+			clampGuiToScreen(main)
+
+			if updateResponsiveLayout then
+				updateResponsiveLayout()
+			end
+		end
+	end))
 end
 
 local function createToggleIcon(gui)
+	local viewport = getViewportSize()
+
 	local toggle = Instance.new("TextButton")
 	toggle.Name = "Toggle"
 	toggle.Size = UDim2.fromOffset(62, 62)
-	toggle.Position = UDim2.new(0, 25, 0.5, -31)
+	toggle.Position = UDim2.fromOffset(25, math.max(80, math.floor(viewport.Y / 2 - 31)))
 	toggle.BackgroundColor3 = Color3.fromRGB(34, 28, 70)
 	toggle.BorderSizePixel = 0
 	toggle.Text = "🎁"
@@ -488,6 +726,11 @@ local function createToggleIcon(gui)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = toggle
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(100, 95, 180)
+	stroke.Thickness = 1.5
+	stroke.Parent = toggle
 
 	local count = Instance.new("TextLabel")
 	count.Name = "Count"
@@ -509,53 +752,216 @@ local function createToggleIcon(gui)
 		setMinimized(false)
 	end))
 
-	local dragging = false
-	local dragStart
-	local startPos
-
-	addConnection(toggle.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = toggle.Position
-		end
-	end))
-
-	addConnection(toggle.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = false
-		end
-	end))
-
-	addConnection(UserInputService.InputChanged:Connect(function(input)
-		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-			local delta = input.Position - dragStart
-
-			toggle.Position = UDim2.new(
-				startPos.X.Scale,
-				startPos.X.Offset + delta.X,
-				startPos.Y.Scale,
-				startPos.Y.Offset + delta.Y
-			)
-		end
-	end))
+	makeDraggable(toggle, toggle)
 
 	return toggle, count
+end
+
+updateResponsiveLayout = function()
+	if not Hub.Main then
+		return
+	end
+
+	local mainSize = Hub.Main.AbsoluteSize
+
+	if mainSize.X <= 0 or mainSize.Y <= 0 then
+		return
+	end
+
+	Hub.ContentScale = getContentScale(mainSize)
+
+	local headerHeight = scaleValue(HEADER_HEIGHT, 22)
+	local sidePadding = scaleValue(17, 7)
+	local contentWidth = math.max(1, mainSize.X - (sidePadding * 2))
+
+	if Hub.Header then
+		Hub.Header.Size = UDim2.new(1, 0, 0, headerHeight)
+	end
+
+	local btnSize = scaleValue(40, 18)
+	local btnGap = scaleValue(6, 3)
+	local btnRightPad = scaleValue(10, 5)
+	local btnTop = math.floor((headerHeight - btnSize) / 2)
+
+	if Hub.CloseButton then
+		Hub.CloseButton.Size = UDim2.fromOffset(btnSize, btnSize)
+		Hub.CloseButton.Position = UDim2.new(1, -(btnRightPad + btnSize), 0, btnTop)
+		Hub.CloseButton.TextSize = scaleValue(16, 9)
+	end
+
+	if Hub.MinimizeButton then
+		Hub.MinimizeButton.Size = UDim2.fromOffset(btnSize, btnSize)
+		Hub.MinimizeButton.Position = UDim2.new(1, -(btnRightPad + (btnSize * 2) + btnGap), 0, btnTop)
+		Hub.MinimizeButton.TextSize = scaleValue(22, 10)
+	end
+
+	if Hub.HeaderTitle then
+		local titleLeft = scaleValue(18, 8)
+		local titleRight = btnRightPad + (btnSize * 2) + btnGap + scaleValue(18, 6)
+
+		Hub.HeaderTitle.Position = UDim2.fromOffset(titleLeft, 0)
+		Hub.HeaderTitle.Size = UDim2.new(1, -(titleLeft + titleRight), 1, 0)
+		Hub.HeaderTitle.TextSize = scaleValue(18, 10)
+
+		local limit = Hub.HeaderTitle:FindFirstChildOfClass("UITextSizeConstraint")
+		if limit then
+			limit.MinTextSize = 8
+			limit.MaxTextSize = scaleValue(18, 10)
+		end
+	end
+
+	if Hub.StatsTitle then
+		Hub.StatsTitle.Position = UDim2.fromOffset(sidePadding, headerHeight + scaleValue(12, 5))
+		Hub.StatsTitle.Size = UDim2.new(1, -(sidePadding * 2), 0, scaleValue(22, 12))
+		Hub.StatsTitle.TextSize = scaleValue(14, 8)
+	end
+
+	local statsTop = headerHeight + scaleValue(38, 16)
+	local statPadding = scaleValue(10, 5)
+	local gapX = scaleValue(10, 4)
+	local gapY = scaleValue(8, 4)
+
+	local columns = 2
+	if contentWidth < scaleValue(190, 110) then
+		columns = 1
+	end
+
+	local rows = math.ceil(6 / columns)
+	local cardHeight = scaleValue(24, 14)
+
+	local cellWidth = math.floor((contentWidth - (statPadding * 2) - (gapX * (columns - 1))) / columns)
+	cellWidth = math.max(scaleValue(120, 70), cellWidth)
+
+	local statsHeight = (statPadding * 2) + (rows * cardHeight) + ((rows - 1) * gapY)
+
+	if Hub.StatLayout then
+		Hub.StatLayout.CellSize = UDim2.fromOffset(cellWidth, cardHeight)
+		Hub.StatLayout.CellPadding = UDim2.fromOffset(gapX, gapY)
+	end
+
+	if Hub.StatsContainer then
+		Hub.StatsContainer.Position = UDim2.fromOffset(sidePadding, statsTop)
+		Hub.StatsContainer.Size = UDim2.new(1, -(sidePadding * 2), 0, statsHeight)
+
+		local pad = Hub.StatsContainer:FindFirstChildOfClass("UIPadding")
+		if pad then
+			pad.PaddingTop = UDim.new(0, statPadding)
+			pad.PaddingLeft = UDim.new(0, statPadding)
+			pad.PaddingRight = UDim.new(0, statPadding)
+			pad.PaddingBottom = UDim.new(0, statPadding)
+		end
+	end
+
+	local statTextSize = scaleValue(14, 8)
+	local statTextMin = math.max(7, statTextSize - 3)
+
+	for _, label in ipairs({
+		Hub.MatchLabel,
+		Hub.DamageLabel,
+		Hub.TotalDamageLabel,
+		Hub.ClearedTimeLabel,
+		Hub.PlaytimeLabel,
+		Hub.ActLabel
+	}) do
+		if label then
+			label.TextSize = statTextSize
+
+			local limit = label:FindFirstChildOfClass("UITextSizeConstraint")
+			if limit then
+				limit.MinTextSize = statTextMin
+				limit.MaxTextSize = statTextSize
+			end
+
+			local pad = label:FindFirstChildOfClass("UIPadding")
+			if pad then
+				pad.PaddingLeft = UDim.new(0, scaleValue(12, 5))
+				pad.PaddingRight = UDim.new(0, scaleValue(8, 4))
+			end
+		end
+	end
+
+	local rewardsTitleY = statsTop + statsHeight + scaleValue(14, 5)
+	local rewardsScrollY = rewardsTitleY + scaleValue(26, 13)
+	local rewardHeight = math.max(scaleValue(70, 35), mainSize.Y - rewardsScrollY - sidePadding)
+
+	if Hub.RewardsTitle then
+		Hub.RewardsTitle.Position = UDim2.fromOffset(sidePadding, rewardsTitleY)
+		Hub.RewardsTitle.Size = UDim2.new(1, -(sidePadding * 2), 0, scaleValue(22, 12))
+		Hub.RewardsTitle.TextSize = scaleValue(14, 8)
+	end
+
+	if Hub.RewardGrid then
+		Hub.RewardGrid.Position = UDim2.fromOffset(sidePadding, rewardsScrollY)
+		Hub.RewardGrid.Size = UDim2.new(1, -(sidePadding * 2), 0, rewardHeight)
+		Hub.RewardGrid.ScrollBarThickness = scaleValue(4, 2)
+
+		local pad = Hub.RewardGrid:FindFirstChildOfClass("UIPadding")
+		if pad then
+			local rewardPad = scaleValue(10, 4)
+
+			pad.PaddingTop = UDim.new(0, rewardPad)
+			pad.PaddingLeft = UDim.new(0, rewardPad)
+			pad.PaddingRight = UDim.new(0, rewardPad)
+			pad.PaddingBottom = UDim.new(0, rewardPad)
+		end
+	end
+
+	if Hub.RewardLayout and Hub.RewardGrid then
+		local rewardPad = scaleValue(10, 4)
+		local rewardInnerWidth = math.max(1, Hub.RewardGrid.AbsoluteSize.X - (rewardPad * 2))
+
+		local minCell = scaleValue(50, 26)
+		local maxCell = scaleValue(82, 34)
+		local padding = scaleValue(10, 4)
+
+		local cols = math.floor((rewardInnerWidth + padding) / (minCell + padding))
+		cols = math.clamp(cols, 2, 5)
+
+		local cell = math.floor((rewardInnerWidth - ((cols - 1) * padding)) / cols)
+		cell = math.clamp(cell, minCell, maxCell)
+
+		Hub.CurrentRewardCellSize = cell
+
+		Hub.RewardLayout.CellSize = UDim2.fromOffset(cell, cell)
+		Hub.RewardLayout.CellPadding = UDim2.fromOffset(padding, padding)
+
+		updateRewardCellsScale()
+	end
+
+	if Hub.ResizeHandle then
+		local handleSize = scaleValue(RESIZE_HANDLE_SIZE, 12)
+
+		Hub.ResizeHandle.Size = UDim2.fromOffset(handleSize, handleSize)
+		Hub.ResizeHandle.Position = UDim2.new(1, -handleSize, 1, -handleSize)
+		Hub.ResizeHandle.TextSize = scaleValue(16, 9)
+	end
 end
 
 local function createUI()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "RewardTrackerUI"
 	gui.ResetOnSpawn = false
-	gui.Parent = CoreGui
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.IgnoreGuiInset = true
+
+	local parented = pcall(function()
+		gui.Parent = CoreGui
+	end)
+
+	if not parented then
+		gui.Parent = plr:WaitForChild("PlayerGui")
+	end
+
+	local initialSize = getInitialSize()
 
 	local main = Instance.new("Frame")
 	main.Name = "Main"
-	main.Size = UDim2.fromOffset(MAIN_WIDTH, MAIN_HEIGHT)
-	main.Position = UDim2.new(0.5, -(MAIN_WIDTH / 2), 0.5, -(MAIN_HEIGHT / 2))
+	main.Size = UDim2.fromOffset(initialSize.X, initialSize.Y)
+	main.Position = centerPositionForSize(initialSize)
 	main.BackgroundColor3 = Color3.fromRGB(13, 14, 20)
 	main.BorderSizePixel = 0
 	main.ClipsDescendants = true
+	main.Active = true
 	main.Parent = gui
 
 	Instance.new("UICorner", main).CornerRadius = UDim.new(0, 18)
@@ -567,14 +973,16 @@ local function createUI()
 
 	local header = Instance.new("Frame")
 	header.Name = "Header"
-	header.Size = UDim2.new(1, 0, 0, 58)
+	header.Size = UDim2.new(1, 0, 0, 29)
 	header.BackgroundColor3 = Color3.fromRGB(25, 25, 34)
 	header.BorderSizePixel = 0
+	header.Active = true
 	header.Parent = main
 
 	Instance.new("UICorner", header).CornerRadius = UDim.new(0, 18)
 
 	local title = Instance.new("TextLabel")
+	title.Name = "HeaderTitle"
 	title.Size = UDim2.new(1, -130, 1, 0)
 	title.Position = UDim2.fromOffset(18, 0)
 	title.BackgroundTransparency = 1
@@ -582,8 +990,15 @@ local function createUI()
 	title.TextColor3 = Color3.fromRGB(255, 255, 255)
 	title.Font = Enum.Font.GothamBlack
 	title.TextSize = 18
+	title.TextScaled = true
 	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextTruncate = Enum.TextTruncate.AtEnd
 	title.Parent = header
+
+	local titleLimit = Instance.new("UITextSizeConstraint")
+	titleLimit.MinTextSize = 8
+	titleLimit.MaxTextSize = 18
+	titleLimit.Parent = title
 
 	local minimize = Instance.new("TextButton")
 	minimize.Name = "Minimize"
@@ -611,7 +1026,7 @@ local function createUI()
 
 	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 12)
 
-	createSectionTitle(main, "Statistic:", 72)
+	local statsTitle = createSectionTitle(main, "Statistic:", 72)
 
 	local statsContainer = Instance.new("Frame")
 	statsContainer.Name = "StatisticContainer"
@@ -619,77 +1034,55 @@ local function createUI()
 	statsContainer.Position = UDim2.fromOffset(17, 98)
 	statsContainer.BackgroundColor3 = Color3.fromRGB(18, 19, 27)
 	statsContainer.BorderSizePixel = 0
+	statsContainer.ClipsDescendants = true
 	statsContainer.Parent = main
 
 	Instance.new("UICorner", statsContainer).CornerRadius = UDim.new(0, 13)
 
-	local leftX = 10
-	local rightX = 226
-	local topY = 10
-	local gapY = 31
-	local cardW = 198
-	local cardH = 22
+	local statPadding = Instance.new("UIPadding")
+	statPadding.PaddingTop = UDim.new(0, 10)
+	statPadding.PaddingLeft = UDim.new(0, 10)
+	statPadding.PaddingRight = UDim.new(0, 10)
+	statPadding.PaddingBottom = UDim.new(0, 10)
+	statPadding.Parent = statsContainer
 
-	local matchLabel = createStatCard(
-		statsContainer,
-		"MatchLabel",
-		"Match: 0",
-		UDim2.fromOffset(cardW, cardH),
-		UDim2.fromOffset(leftX, topY)
-	)
+	local statLayout = Instance.new("UIGridLayout")
+	statLayout.CellSize = UDim2.fromOffset(198, 24)
+	statLayout.CellPadding = UDim2.fromOffset(10, 8)
+	statLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	statLayout.Parent = statsContainer
 
-	local damageLabel = createStatCard(
-		statsContainer,
-		"DamageLabel",
-		"Damage: 0",
-		UDim2.fromOffset(cardW, cardH),
-		UDim2.fromOffset(leftX, topY + gapY)
-	)
+	local matchLabel = createStatCard(statsContainer, "MatchLabel", "Match: 0", 1)
+	local damageLabel = createStatCard(statsContainer, "DamageLabel", "Damage: 0", 2)
+	local totalDamageLabel = createStatCard(statsContainer, "TotalDamageLabel", "Total Damage: 0", 3)
+	local clearedTimeLabel = createStatCard(statsContainer, "ClearedTimeLabel", "Cleared Time: 0", 4)
+	local playtimeLabel = createStatCard(statsContainer, "PlaytimeLabel", "Play Time: 0", 5)
+	local actLabel = createStatCard(statsContainer, "ActLabel", "Act: 0", 6)
 
-	local totalDamageLabel = createStatCard(
-		statsContainer,
-		"TotalDamageLabel",
-		"Total Damage: 0",
-		UDim2.fromOffset(cardW, cardH),
-		UDim2.fromOffset(leftX, topY + (gapY * 2))
-	)
-
-	local clearedTimeLabel = createStatCard(
-		statsContainer,
-		"ClearedTimeLabel",
-		"Cleared Time: 0",
-		UDim2.fromOffset(cardW, cardH),
-		UDim2.fromOffset(rightX, topY)
-	)
-
-	local playtimeLabel = createStatCard(
-		statsContainer,
-		"PlaytimeLabel",
-		"Play Time: 0",
-		UDim2.fromOffset(cardW, cardH),
-		UDim2.fromOffset(rightX, topY + gapY)
-	)
-
-	local actLabel = createStatCard(
-		statsContainer,
-		"ActLabel",
-		"Act: 0",
-		UDim2.fromOffset(cardW, cardH),
-		UDim2.fromOffset(rightX, topY + (gapY * 2))
-	)
-
-	local rewardsTitleY = 98 + 104 + 17
-	local rewardsScrollY = rewardsTitleY + 27
-
-	createSectionTitle(main, "Rewards Collected:", rewardsTitleY)
-
-	local rewardScroll = createScrollFrame(main, "RewardGrid", rewardsScrollY, REWARD_SCROLL_HEIGHT)
+	local rewardsTitle = createSectionTitle(main, "Rewards Collected:", 219)
+	local rewardScroll = createScrollFrame(main, "RewardGrid", 246, 105)
 
 	local grid = Instance.new("UIGridLayout")
 	grid.CellSize = UDim2.fromOffset(72, 72)
-	grid.CellPadding = UDim2.fromOffset(11, 10)
+	grid.CellPadding = UDim2.fromOffset(10, 10)
 	grid.SortOrder = Enum.SortOrder.LayoutOrder
 	grid.Parent = rewardScroll
+
+	local resizeHandle = Instance.new("TextButton")
+	resizeHandle.Name = "ResizeHandle"
+	resizeHandle.Size = UDim2.fromOffset(RESIZE_HANDLE_SIZE, RESIZE_HANDLE_SIZE)
+	resizeHandle.Position = UDim2.new(1, -RESIZE_HANDLE_SIZE, 1, -RESIZE_HANDLE_SIZE)
+	resizeHandle.BackgroundColor3 = Color3.fromRGB(45, 47, 70)
+	resizeHandle.BackgroundTransparency = 0.1
+	resizeHandle.BorderSizePixel = 0
+	resizeHandle.Text = "↘"
+	resizeHandle.TextColor3 = Color3.fromRGB(230, 230, 245)
+	resizeHandle.Font = Enum.Font.GothamBlack
+	resizeHandle.TextSize = 16
+	resizeHandle.ZIndex = 50
+	resizeHandle.Parent = main
+
+	Instance.new("UICorner", resizeHandle).CornerRadius = UDim.new(0, 9)
 
 	local toggle, toggleCount = createToggleIcon(gui)
 
@@ -701,42 +1094,17 @@ local function createUI()
 		Hub:Destroy()
 	end))
 
-	local dragging = false
-	local dragStart
-	local startPos
-
-	addConnection(header.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = main.Position
-		end
-	end))
-
-	addConnection(header.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = false
-		end
-	end))
-
-	addConnection(UserInputService.InputChanged:Connect(function(input)
-		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-			local delta = input.Position - dragStart
-
-			main.Position = UDim2.new(
-				startPos.X.Scale,
-				startPos.X.Offset + delta.X,
-				startPos.Y.Scale,
-				startPos.Y.Offset + delta.Y
-			)
-		end
-	end))
-
 	Hub.Gui = gui
 	Hub.Main = main
+	Hub.Header = header
+	Hub.HeaderTitle = title
+	Hub.StatsTitle = statsTitle
+	Hub.RewardsTitle = rewardsTitle
 	Hub.StatsContainer = statsContainer
+	Hub.StatLayout = statLayout
 	Hub.RewardGrid = rewardScroll
 	Hub.RewardLayout = grid
+	Hub.ResizeHandle = resizeHandle
 
 	Hub.MatchLabel = matchLabel
 	Hub.DamageLabel = damageLabel
@@ -746,8 +1114,51 @@ local function createUI()
 	Hub.ActLabel = actLabel
 
 	Hub.MinimizeButton = minimize
+	Hub.CloseButton = close
 	Hub.ToggleIcon = toggle
 	Hub.ToggleCount = toggleCount
+
+	makeDraggable(main, header)
+	makeResizable(main, resizeHandle)
+
+	addConnection(main:GetPropertyChangedSignal("Size"):Connect(function()
+		if updateResponsiveLayout then
+			task.defer(updateResponsiveLayout)
+		end
+	end))
+
+	local function bindCameraViewport()
+		local cam = workspace.CurrentCamera
+
+		if cam then
+			addConnection(cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+				fitMainToViewport()
+
+				if Hub.ToggleIcon then
+					clampGuiToScreen(Hub.ToggleIcon)
+				end
+
+				if updateResponsiveLayout then
+					updateResponsiveLayout()
+				end
+			end))
+		end
+	end
+
+	bindCameraViewport()
+
+	addConnection(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		task.wait()
+		bindCameraViewport()
+	end))
+
+	task.defer(function()
+		fitMainToViewport()
+
+		if updateResponsiveLayout then
+			updateResponsiveLayout()
+		end
+	end)
 end
 
 local function findRewardRootFromIcon(iconObj, rewardFrame)
@@ -828,6 +1239,39 @@ local function getContainers(frame)
 	return containers
 end
 
+local function createRewardCell(container)
+	local baseW = container.AbsoluteSize.X
+	local baseH = container.AbsoluteSize.Y
+
+	if baseW <= 0 then
+		baseW = 72
+	end
+
+	if baseH <= 0 then
+		baseH = 72
+	end
+
+	local cell = Instance.new("Frame")
+	cell.Name = "RewardCell"
+	cell.BackgroundTransparency = 1
+	cell.BorderSizePixel = 0
+	cell.ClipsDescendants = false
+
+	local clone = container:Clone()
+	setupCloneCard(clone)
+	clone.Size = UDim2.fromOffset(baseW, baseH)
+	clone.AnchorPoint = Vector2.new(0.5, 0.5)
+	clone.Position = UDim2.fromScale(0.5, 0.5)
+	clone.Parent = cell
+
+	local uiScale = Instance.new("UIScale")
+	uiScale.Name = "RewardAutoScale"
+	uiScale.Scale = 1
+	uiScale.Parent = clone
+
+	return cell, clone, uiScale, Vector2.new(baseW, baseH)
+end
+
 local function addReward(container)
 	local image = getRewardImage(container)
 
@@ -835,7 +1279,7 @@ local function addReward(container)
 		return
 	end
 
-	updateGridCellSize(container)
+	updateGridCellSize()
 
 	local amount = getRewardAmount(container)
 
@@ -843,20 +1287,24 @@ local function addReward(container)
 		Hub.Rewards[image].Amount += amount
 		setRewardAmount(Hub.Rewards[image].Clone, Hub.Rewards[image].Amount)
 	else
-		local clone = container:Clone()
-		setupCloneCard(clone)
+		local cell, clone, uiScale, baseSize = createRewardCell(container)
 
 		Hub.RewardOrder += 1
-		clone.LayoutOrder = Hub.RewardOrder
-		clone.Parent = Hub.RewardGrid
+		cell.LayoutOrder = Hub.RewardOrder
+		cell.Parent = Hub.RewardGrid
 
 		Hub.Rewards[image] = {
 			Amount = amount,
-			Clone = clone
+			Cell = cell,
+			Clone = clone,
+			Scale = uiScale,
+			BaseSize = baseSize
 		}
 
 		setRewardAmount(clone, amount)
 	end
+
+	updateGridCellSize()
 end
 
 local function updatePlaytime()
