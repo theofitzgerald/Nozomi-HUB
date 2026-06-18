@@ -528,11 +528,11 @@ local function updateRewardCellsScale()
 			data.Clone.AnchorPoint = Vector2.new(0.5, 0.5)
 			data.Clone.Position = UDim2.fromScale(0.5, 0.5)
 
-			local margin = scaleValue(4, 2)
+			local margin = scaleValue(1, 0)
 			local available = math.max(10, cellSize - margin)
 
 			local scale = math.min(available / baseW, available / baseH)
-			data.Scale.Scale = math.clamp(scale, 0.25, 1.15)
+			data.Scale.Scale = math.clamp(scale, 0.25, 1.25)
 		end
 	end
 end
@@ -576,10 +576,10 @@ local function createScrollFrame(parent, name, posY, height)
 	Instance.new("UICorner", scroll).CornerRadius = UDim.new(0, 13)
 
 	local pad = Instance.new("UIPadding")
-	pad.PaddingTop = UDim.new(0, 10)
-	pad.PaddingLeft = UDim.new(0, 10)
-	pad.PaddingRight = UDim.new(0, 10)
-	pad.PaddingBottom = UDim.new(0, 10)
+	pad.PaddingTop = UDim.new(0, 4)
+	pad.PaddingLeft = UDim.new(0, 4)
+	pad.PaddingRight = UDim.new(0, 4)
+	pad.PaddingBottom = UDim.new(0, 4)
 	pad.Parent = scroll
 
 	return scroll
@@ -897,7 +897,7 @@ updateResponsiveLayout = function()
 
 		local pad = Hub.RewardGrid:FindFirstChildOfClass("UIPadding")
 		if pad then
-			local rewardPad = scaleValue(10, 4)
+			local rewardPad = scaleValue(4, 2)
 
 			pad.PaddingTop = UDim.new(0, rewardPad)
 			pad.PaddingLeft = UDim.new(0, rewardPad)
@@ -907,15 +907,16 @@ updateResponsiveLayout = function()
 	end
 
 	if Hub.RewardLayout and Hub.RewardGrid then
-		local rewardPad = scaleValue(10, 4)
+		local rewardPad = scaleValue(4, 2)
 		local rewardInnerWidth = math.max(1, Hub.RewardGrid.AbsoluteSize.X - (rewardPad * 2))
 
-		local minCell = scaleValue(50, 26)
-		local maxCell = scaleValue(82, 34)
-		local padding = scaleValue(10, 4)
+		local padding = scaleValue(4, 2)
+
+		local minCell = scaleValue(46, 28)
+		local maxCell = scaleValue(76, 38)
 
 		local cols = math.floor((rewardInnerWidth + padding) / (minCell + padding))
-		cols = math.clamp(cols, 2, 5)
+		cols = math.clamp(cols, 2, 6)
 
 		local cell = math.floor((rewardInnerWidth - ((cols - 1) * padding)) / cols)
 		cell = math.clamp(cell, minCell, maxCell)
@@ -1064,7 +1065,7 @@ local function createUI()
 
 	local grid = Instance.new("UIGridLayout")
 	grid.CellSize = UDim2.fromOffset(72, 72)
-	grid.CellPadding = UDim2.fromOffset(10, 10)
+	grid.CellPadding = UDim2.fromOffset(4, 4)
 	grid.SortOrder = Enum.SortOrder.LayoutOrder
 	grid.Parent = rewardScroll
 
